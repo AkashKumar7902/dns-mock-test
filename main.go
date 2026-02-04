@@ -1,18 +1,13 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
-	"time"
 
 	"github.com/miekg/dns"
-	"go.mongodb.org/mongo-driver/v2/bson"
-	"go.mongodb.org/mongo-driver/v2/mongo"
-	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 // DNSResponse represents the JSON response structure
@@ -305,64 +300,64 @@ func respondWithError(w http.ResponseWriter, message string, statusCode int) {
 	json.NewEncoder(w).Encode(map[string]string{"error": message})
 }
 
-// Handler for MongoDB operations
-func handleMongoDB(w http.ResponseWriter, r *http.Request) {
-	// MongoDB SRV connection string - replace with your credentials
-	mongoURI := r.URL.Query().Get("uri")
-	if mongoURI == "" {
-		// Default URI format (replace with actual credentials)
-		mongoURI = "mongodb+srv://username:password@cluster.mongodb.net/testdb?retryWrites=true&w=majority"
-	}
+// // Handler for MongoDB operations
+// func handleMongoDB(w http.ResponseWriter, r *http.Request) {
+// 	// MongoDB SRV connection string - replace with your credentials
+// 	mongoURI := r.URL.Query().Get("uri")
+// 	if mongoURI == "" {
+// 		// Default URI format (replace with actual credentials)
+// 		mongoURI = ""
+// 	}
 
-	// Create context with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+// 	// Create context with timeout
+// 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+// 	defer cancel()
 
-	// Connect to MongoDB
-	client, err := mongo.Connect(options.Client().ApplyURI(mongoURI))
-	if err != nil {
-		respondWithError(w, fmt.Sprintf("Failed to connect to MongoDB: %v", err), http.StatusInternalServerError)
-		return
-	}
-	defer client.Disconnect(ctx)
+// 	// Connect to MongoDB
+// 	client, err := mongo.Connect(options.Client().ApplyURI(mongoURI))
+// 	if err != nil {
+// 		respondWithError(w, fmt.Sprintf("Failed to connect to MongoDB: %v", err), http.StatusInternalServerError)
+// 		return
+// 	}
+// 	defer client.Disconnect(ctx)
 
-	// Ping the database
-	err = client.Ping(ctx, nil)
-	if err != nil {
-		respondWithError(w, fmt.Sprintf("Failed to ping MongoDB: %v", err), http.StatusInternalServerError)
-		return
-	}
+// 	// Ping the database
+// 	err = client.Ping(ctx, nil)
+// 	if err != nil {
+// 		respondWithError(w, fmt.Sprintf("Failed to ping MongoDB: %v", err), http.StatusInternalServerError)
+// 		return
+// 	}
 
-	// Access database and collection
-	database := client.Database("testdb")
-	collection := database.Collection("documents")
+// 	// Access database and collection
+// 	database := client.Database("testdb")
+// 	collection := database.Collection("documents")
 
-	// Query existing documents (get the first 5 documents)
-	cursor, err := collection.Find(ctx, bson.M{})
-	if err != nil {
-		respondWithError(w, fmt.Sprintf("Failed to query documents: %v", err), http.StatusInternalServerError)
-		return
-	}
-	defer cursor.Close(ctx)
+// 	// Query existing documents (get the first 5 documents)
+// 	cursor, err := collection.Find(ctx, bson.M{})
+// 	if err != nil {
+// 		respondWithError(w, fmt.Sprintf("Failed to query documents: %v", err), http.StatusInternalServerError)
+// 		return
+// 	}
+// 	defer cursor.Close(ctx)
 
-	// Decode all documents
-	var documents []bson.M
-	err = cursor.All(ctx, &documents)
-	if err != nil {
-		respondWithError(w, fmt.Sprintf("Failed to decode documents: %v", err), http.StatusInternalServerError)
-		return
-	}
+// 	// Decode all documents
+// 	var documents []bson.M
+// 	err = cursor.All(ctx, &documents)
+// 	if err != nil {
+// 		respondWithError(w, fmt.Sprintf("Failed to decode documents: %v", err), http.StatusInternalServerError)
+// 		return
+// 	}
 
-	// Prepare response
-	response := map[string]interface{}{
-		"status":    "success",
-		"count":     len(documents),
-		"documents": documents,
-		"message":   "Documents queried successfully",
-	}
+// 	// Prepare response
+// 	response := map[string]interface{}{
+// 		"status":    "success",
+// 		"count":     len(documents),
+// 		"documents": documents,
+// 		"message":   "Documents queried successfully",
+// 	}
 
-	respondWithJSON(w, response)
-}
+// 	respondWithJSON(w, response)
+// }
 
 func main() {
 	http.HandleFunc("/dns/a", handleARecord)
@@ -371,7 +366,7 @@ func main() {
 	http.HandleFunc("/dns/txt", handleTXTRecord)
 	http.HandleFunc("/dns/mx", handleMXRecord)
 	http.HandleFunc("/dns/srv", handleSRVRecord)
-	http.HandleFunc("/mongodb", handleMongoDB)
+	// http.HandleFunc("/mongodb", handleMongoDB)
 	http.HandleFunc("/health", handleHealth)
 
 	port := ":8086"
