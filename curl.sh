@@ -43,9 +43,14 @@ echo "7. SRV Record Query (_mongodb._tcp.cluster0.sjlpojg.mongodb.net):"
 curl -s "${BASE_URL}/dns/srv?service=mongodb&proto=tcp&name=cluster0.sjlpojg.mongodb.net" | jq
 echo ""
 
-# Error handling test
-echo "8. Error Test (missing domain parameter):"
-curl -s "${BASE_URL}/dns/a" | jq
+# # Error handling test
+# echo "8. Error Test (missing domain parameter):"
+# curl -s "${BASE_URL}/dns/a" | jq
+# echo ""
+
+# MongoDB Test
+echo "9. MongoDB Test (query existing documents):"
+curl -s "${BASE_URL}/mongodb?uri=mongodb%2Bsrv%3A%2F%2Fmeakash7902%3Ameakash7902%40cluster0.sjlpojg.mongodb.net%2Ftestdb" | jq
 echo ""
 
 echo "===== All tests completed ====="

@@ -1,13 +1,18 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
+	"time"
 
 	"github.com/miekg/dns"
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 // DNSResponse represents the JSON response structure
@@ -175,6 +180,7 @@ func handleCNAMERecord(w http.ResponseWriter, r *http.Request) {
 		Records: cnames,
 	})
 }
+
 // Handler for MX records - Force TCP
 func handleMXRecord(w http.ResponseWriter, r *http.Request) {
 	domain := r.URL.Query().Get("domain")
@@ -255,29 +261,29 @@ func handleSRVRecord(w http.ResponseWriter, r *http.Request) {
 func queryDNS(domain string, qtype uint16) ([]dns.RR, error) {
 	c := new(dns.Client)
 	// c.Net = "tcp" // Force TCP protocol
-	
+
 	m := new(dns.Msg)
 	m.SetQuestion(dns.Fqdn(domain), qtype)
 	m.RecursionDesired = true
-	
+
 	// Use Google's public DNS server
 	dnsServer := "8.8.8.8:53"
-	
+
 	// You can also get system DNS servers
 	config, err := dns.ClientConfigFromFile("/etc/resolv.conf")
 	if err == nil && len(config.Servers) > 0 {
 		dnsServer = net.JoinHostPort(config.Servers[0], config.Port)
 	}
-	
+
 	resp, _, err := c.Exchange(m, dnsServer)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	if resp.Rcode != dns.RcodeSuccess {
 		return nil, fmt.Errorf("DNS query failed with code: %d", resp.Rcode)
 	}
-	
+
 	return resp.Answer, nil
 }
 
@@ -299,6 +305,65 @@ func respondWithError(w http.ResponseWriter, message string, statusCode int) {
 	json.NewEncoder(w).Encode(map[string]string{"error": message})
 }
 
+// Handler for MongoDB operations
+func handleMongoDB(w http.ResponseWriter, r *http.Request) {
+	// MongoDB SRV connection string - replace with your credentials
+	mongoURI := r.URL.Query().Get("uri")
+	if mongoURI == "" {
+		// Default URI format (replace with actual credentials)
+		mongoURI = "mongodb+srv://username:password@cluster.mongodb.net/testdb?retryWrites=true&w=majority"
+	}
+
+	// Create context with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Connect to MongoDB
+	client, err := mongo.Connect(options.Client().ApplyURI(mongoURI))
+	if err != nil {
+		respondWithError(w, fmt.Sprintf("Failed to connect to MongoDB: %v", err), http.StatusInternalServerError)
+		return
+	}
+	defer client.Disconnect(ctx)
+
+	// Ping the database
+	err = client.Ping(ctx, nil)
+	if err != nil {
+		respondWithError(w, fmt.Sprintf("Failed to ping MongoDB: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Access database and collection
+	database := client.Database("testdb")
+	collection := database.Collection("documents")
+
+	// Query existing documents (get the first 5 documents)
+	cursor, err := collection.Find(ctx, bson.M{})
+	if err != nil {
+		respondWithError(w, fmt.Sprintf("Failed to query documents: %v", err), http.StatusInternalServerError)
+		return
+	}
+	defer cursor.Close(ctx)
+
+	// Decode all documents
+	var documents []bson.M
+	err = cursor.All(ctx, &documents)
+	if err != nil {
+		respondWithError(w, fmt.Sprintf("Failed to decode documents: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Prepare response
+	response := map[string]interface{}{
+		"status":    "success",
+		"count":     len(documents),
+		"documents": documents,
+		"message":   "Documents queried successfully",
+	}
+
+	respondWithJSON(w, response)
+}
+
 func main() {
 	http.HandleFunc("/dns/a", handleARecord)
 	http.HandleFunc("/dns/aaaa", handleAAAARecord)
@@ -306,6 +371,7 @@ func main() {
 	http.HandleFunc("/dns/txt", handleTXTRecord)
 	http.HandleFunc("/dns/mx", handleMXRecord)
 	http.HandleFunc("/dns/srv", handleSRVRecord)
+	http.HandleFunc("/mongodb", handleMongoDB)
 	http.HandleFunc("/health", handleHealth)
 
 	port := ":8086"
@@ -317,6 +383,7 @@ func main() {
 	log.Printf("  GET /dns/txt?domain=<domain>")
 	log.Printf("  GET /dns/mx?domain=<domain>")
 	log.Printf("  GET /dns/srv?service=<service>&proto=<proto>&name=<name>")
+	log.Printf("  GET /mongodb?uri=<mongodb-srv-uri>")
 	log.Printf("  GET /health")
 
 	if err := http.ListenAndServe(port, nil); err != nil {
