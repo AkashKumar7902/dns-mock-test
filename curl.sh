@@ -49,8 +49,8 @@ echo ""
 # echo ""
 
 # MongoDB Test
-echo "9. MongoDB Test (query existing documents):"
-curl -s "${BASE_URL}/mongodb?uri=mongodb%2Bsrv%3A%2F%2Fmeakash7902%3Ameakash7902%40cluster0.sjlpojg.mongodb.net%2Ftestdb" | jq
-echo ""
+# echo "9. MongoDB Test (query existing documents):"
+# curl -s "${BASE_URL}/mongodb?uri=" | jq
+# echo ""
 
 echo "===== All tests completed ====="

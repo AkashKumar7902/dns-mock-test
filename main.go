@@ -1,18 +1,15 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/miekg/dns"
-	"go.mongodb.org/mongo-driver/v2/bson"
-	"go.mongodb.org/mongo-driver/v2/mongo"
-	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 // DNSResponse represents the JSON response structure
@@ -257,27 +254,66 @@ func handleSRVRecord(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// queryDNS performs DNS query over TCP
+// queryDNS performs DNS query over UDP without using the 'connect' syscall
 func queryDNS(domain string, qtype uint16) ([]dns.RR, error) {
-	c := new(dns.Client)
-	// c.Net = "tcp" // Force TCP protocol
-
+	// 1. Create the DNS message
 	m := new(dns.Msg)
 	m.SetQuestion(dns.Fqdn(domain), qtype)
 	m.RecursionDesired = true
+	m.SetEdns0(4096, true) // Support larger UDP packets
+	m.Id = dns.Id()        // Generate random ID
 
-	// Use Google's public DNS server
+	// 2. Resolve the destination address
+	// This does not connect; it just parses the IP/Port
 	dnsServer := "8.8.8.8:53"
-
-	// You can also get system DNS servers
-	config, err := dns.ClientConfigFromFile("/etc/resolv.conf")
-	if err == nil && len(config.Servers) > 0 {
-		dnsServer = net.JoinHostPort(config.Servers[0], config.Port)
+	serverAddr, err := net.ResolveUDPAddr("udp", dnsServer)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve DNS server address: %v", err)
 	}
 
-	resp, _, err := c.Exchange(m, dnsServer)
+	// 3. Create an UNCONNECTED UDP socket
+	// Listening on Port 0 picks a random available local port.
+	// This uses the 'bind' syscall, but strictly avoids 'connect'.
+	localAddr, _ := net.ResolveUDPAddr("udp", ":0")
+	conn, err := net.ListenUDP("udp", localAddr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open UDP socket: %v", err)
+	}
+	defer conn.Close()
+
+	// Set timeout for the socket
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	// 4. Pack the message into bytes
+	out, err := m.Pack()
 	if err != nil {
 		return nil, err
+	}
+
+	// 5. Send message using WriteTo (maps to 'sendto' syscall)
+	_, err = conn.WriteToUDP(out, serverAddr)
+	if err != nil {
+		return nil, err
+	}
+
+	// 6. Receive response using ReadFrom (maps to 'recvfrom' syscall)
+	// UDP packets are limited to 65535, but 4096 is standard for EDNS0
+	buf := make([]byte, 4096)
+	n, _, err := conn.ReadFromUDP(buf)
+	if err != nil {
+		return nil, err
+	}
+
+	// 7. Unpack the response
+	resp := new(dns.Msg)
+	err = resp.Unpack(buf[:n])
+	if err != nil {
+		return nil, err
+	}
+
+	// Verify ID matches to ensure this is the response to our query
+	if resp.Id != m.Id {
+		return nil, fmt.Errorf("id mismatch: expected %d, got %d", m.Id, resp.Id)
 	}
 
 	if resp.Rcode != dns.RcodeSuccess {
@@ -306,72 +342,74 @@ func respondWithError(w http.ResponseWriter, message string, statusCode int) {
 }
 
 // Handler for MongoDB operations
-func handleMongoDB(w http.ResponseWriter, r *http.Request) {
-	// MongoDB SRV connection string - replace with your credentials
-	mongoURI := r.URL.Query().Get("uri")
-	if mongoURI == "" {
-		// Default URI format (replace with actual credentials)
-		mongoURI = "mongodb+srv://username:password@cluster.mongodb.net/testdb?retryWrites=true&w=majority"
-	}
+// func handleMongoDB(w http.ResponseWriter, r *http.Request) {
+// 	// MongoDB SRV connection string - replace with your credentials
+// 	mongoURI := r.URL.Query().Get("uri")
+// 	if mongoURI == "" {
+// 		// Default URI format (replace with actual credentials)
+// 		mongoURI = ""
+// 	}
 
-	// Create context with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+// 	// Create context with timeout
+// 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+// 	defer cancel()
 
-	// Connect to MongoDB
-	client, err := mongo.Connect(options.Client().ApplyURI(mongoURI))
-	if err != nil {
-		respondWithError(w, fmt.Sprintf("Failed to connect to MongoDB: %v", err), http.StatusInternalServerError)
-		return
-	}
-	defer client.Disconnect(ctx)
+// 	// Connect to MongoDB
+// 	client, err := mongo.Connect(options.Client().ApplyURI(mongoURI))
+// 	if err != nil {
+// 		respondWithError(w, fmt.Sprintf("Failed to connect to MongoDB: %v", err), http.StatusInternalServerError)
+// 		return
+// 	}
+// 	defer client.Disconnect(ctx)
 
-	// Ping the database
-	err = client.Ping(ctx, nil)
-	if err != nil {
-		respondWithError(w, fmt.Sprintf("Failed to ping MongoDB: %v", err), http.StatusInternalServerError)
-		return
-	}
+// 	// Ping the database
+// 	err = client.Ping(ctx, nil)
+// 	if err != nil {
+// 		respondWithError(w, fmt.Sprintf("Failed to ping MongoDB: %v", err), http.StatusInternalServerError)
+// 		return
+// 	}
 
-	// Access database and collection
-	database := client.Database("testdb")
-	collection := database.Collection("documents")
+// 	// Access database and collection
+// 	database := client.Database("testdb")
+// 	collection := database.Collection("documents")
 
-	// Query existing documents (get the first 5 documents)
-	cursor, err := collection.Find(ctx, bson.M{})
-	if err != nil {
-		respondWithError(w, fmt.Sprintf("Failed to query documents: %v", err), http.StatusInternalServerError)
-		return
-	}
-	defer cursor.Close(ctx)
+// 	// Query existing documents (get the first 5 documents)
+// 	cursor, err := collection.Find(ctx, bson.M{})
+// 	if err != nil {
+// 		respondWithError(w, fmt.Sprintf("Failed to query documents: %v", err), http.StatusInternalServerError)
+// 		return
+// 	}
+// 	defer cursor.Close(ctx)
 
-	// Decode all documents
-	var documents []bson.M
-	err = cursor.All(ctx, &documents)
-	if err != nil {
-		respondWithError(w, fmt.Sprintf("Failed to decode documents: %v", err), http.StatusInternalServerError)
-		return
-	}
+// 	// Decode all documents
+// 	var documents []bson.M
+// 	err = cursor.All(ctx, &documents)
+// 	if err != nil {
+// 		respondWithError(w, fmt.Sprintf("Failed to decode documents: %v", err), http.StatusInternalServerError)
+// 		return
+// 	}
 
-	// Prepare response
-	response := map[string]interface{}{
-		"status":    "success",
-		"count":     len(documents),
-		"documents": documents,
-		"message":   "Documents queried successfully",
-	}
+// 	// Prepare response
+// 	response := map[string]interface{}{
+// 		"status":    "success",
+// 		"count":     len(documents),
+// 		"documents": documents,
+// 		"message":   "Documents queried successfully",
+// 	}
 
-	respondWithJSON(w, response)
-}
+// 	respondWithJSON(w, response)
+// }
 
 func main() {
+	println("PID:", os.Getpid())
+
 	http.HandleFunc("/dns/a", handleARecord)
 	http.HandleFunc("/dns/aaaa", handleAAAARecord)
 	http.HandleFunc("/dns/cname", handleCNAMERecord)
 	http.HandleFunc("/dns/txt", handleTXTRecord)
 	http.HandleFunc("/dns/mx", handleMXRecord)
 	http.HandleFunc("/dns/srv", handleSRVRecord)
-	http.HandleFunc("/mongodb", handleMongoDB)
+	// http.HandleFunc("/mongodb", handleMongoDB)
 	http.HandleFunc("/health", handleHealth)
 
 	port := ":8086"

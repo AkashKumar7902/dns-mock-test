@@ -42,8 +42,8 @@ curl -s "http://localhost:8086/dns/srv?service=mongodb&proto=tcp&name=cluster0.s
 echo ""
 
 # MongoDB Test
-echo "8. MongoDB Test (query existing documents):"
-curl -s "http://localhost:8086/mongodb?uri=mongodb%2Bsrv%3A%2F%2Fmeakash7902%3Ameakash7902%40cluster0.sjlpojg.mongodb.net%2Ftestdb" | jq
-echo ""
+# echo "8. MongoDB Test (query existing documents):"
+# curl -s "http://localhost:8086/mongodb?uri=" | jq
+# echo ""
 
 echo "===== All tests completed ====="
