@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/miekg/dns"
@@ -48,6 +49,17 @@ type SRVRecord struct {
 	Weight   uint16 `json:"weight"`
 }
 
+func getTransport(r *http.Request) (string, error) {
+	transport := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("transport")))
+	if transport == "" {
+		return "udp4", nil
+	}
+	if transport != "udp4" && transport != "udp6" {
+		return "", fmt.Errorf("transport must be udp4 or udp6")
+	}
+	return transport, nil
+}
+
 // Handler for A records (IPv4) - Force TCP
 func handleARecord(w http.ResponseWriter, r *http.Request) {
 	domain := r.URL.Query().Get("domain")
@@ -56,7 +68,13 @@ func handleARecord(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	records, err := queryDNS(domain, dns.TypeA)
+	transport, err := getTransport(r)
+	if err != nil {
+		respondWithError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	records, err := queryDNS(domain, dns.TypeA, transport)
 	if err != nil {
 		respondWithJSON(w, DNSResponse{
 			Domain: domain,
@@ -88,7 +106,13 @@ func handleAAAARecord(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	records, err := queryDNS(domain, dns.TypeAAAA)
+	transport, err := getTransport(r)
+	if err != nil {
+		respondWithError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	records, err := queryDNS(domain, dns.TypeAAAA, transport)
 	if err != nil {
 		respondWithJSON(w, DNSResponse{
 			Domain: domain,
@@ -120,7 +144,13 @@ func handleTXTRecord(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	records, err := queryDNS(domain, dns.TypeTXT)
+	transport, err := getTransport(r)
+	if err != nil {
+		respondWithError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	records, err := queryDNS(domain, dns.TypeTXT, transport)
 	if err != nil {
 		respondWithJSON(w, DNSResponse{
 			Domain: domain,
@@ -154,7 +184,13 @@ func handleCNAMERecord(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	records, err := queryDNS(domain, dns.TypeCNAME)
+	transport, err := getTransport(r)
+	if err != nil {
+		respondWithError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	records, err := queryDNS(domain, dns.TypeCNAME, transport)
 	if err != nil {
 		respondWithJSON(w, DNSResponse{
 			Domain: domain,
@@ -186,7 +222,13 @@ func handleMXRecord(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rrs, err := queryDNS(domain, dns.TypeMX)
+	transport, err := getTransport(r)
+	if err != nil {
+		respondWithError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	rrs, err := queryDNS(domain, dns.TypeMX, transport)
 	if err != nil {
 		respondWithJSON(w, MXResponse{
 			Domain: domain,
@@ -224,8 +266,14 @@ func handleSRVRecord(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	transport, err := getTransport(r)
+	if err != nil {
+		respondWithError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	domain := fmt.Sprintf("_%s._%s.%s", service, proto, name)
-	rrs, err := queryDNS(domain, dns.TypeSRV)
+	rrs, err := queryDNS(domain, dns.TypeSRV, transport)
 	if err != nil {
 		respondWithJSON(w, SRVResponse{
 			Domain: domain,
@@ -254,8 +302,9 @@ func handleSRVRecord(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// queryDNS performs DNS query over UDP without using the 'connect' syscall
-func queryDNS(domain string, qtype uint16) ([]dns.RR, error) {
+// queryDNS performs DNS query over UDP without using the 'connect' syscall.
+// transport must be udp4 or udp6.
+func queryDNS(domain string, qtype uint16, transport string) ([]dns.RR, error) {
 	// 1. Create the DNS message
 	m := new(dns.Msg)
 	m.SetQuestion(dns.Fqdn(domain), qtype)
@@ -263,10 +312,24 @@ func queryDNS(domain string, qtype uint16) ([]dns.RR, error) {
 	m.SetEdns0(4096, true) // Support larger UDP packets
 	m.Id = dns.Id()        // Generate random ID
 
-	// 2. Resolve the destination address
-	// This does not connect; it just parses the IP/Port
-	dnsServer := "8.8.8.8:53"
-	serverAddr, err := net.ResolveUDPAddr("udp", dnsServer)
+	network := ""
+	dnsServer := ""
+	localAddrStr := ""
+	switch transport {
+	case "udp4":
+		network = "udp4"
+		dnsServer = "8.8.8.8:53"
+		localAddrStr = "0.0.0.0:0"
+	case "udp6":
+		network = "udp6"
+		dnsServer = "[2001:4860:4860::8888]:53"
+		localAddrStr = "[::]:0"
+	default:
+		return nil, fmt.Errorf("unsupported transport: %s", transport)
+	}
+
+	// 2. Resolve destination without connecting.
+	serverAddr, err := net.ResolveUDPAddr(network, dnsServer)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve DNS server address: %v", err)
 	}
@@ -274,8 +337,12 @@ func queryDNS(domain string, qtype uint16) ([]dns.RR, error) {
 	// 3. Create an UNCONNECTED UDP socket
 	// Listening on Port 0 picks a random available local port.
 	// This uses the 'bind' syscall, but strictly avoids 'connect'.
-	localAddr, _ := net.ResolveUDPAddr("udp", ":0")
-	conn, err := net.ListenUDP("udp", localAddr)
+	localAddr, err := net.ResolveUDPAddr(network, localAddrStr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve local UDP address: %v", err)
+	}
+
+	conn, err := net.ListenUDP(network, localAddr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open UDP socket: %v", err)
 	}
@@ -415,12 +482,12 @@ func main() {
 	port := ":8086"
 	log.Printf("DNS API Server starting on port %s", port)
 	log.Printf("Endpoints:")
-	log.Printf("  GET /dns/a?domain=<domain>")
-	log.Printf("  GET /dns/aaaa?domain=<domain>")
-	log.Printf("  GET /dns/cname?domain=<domain>")
-	log.Printf("  GET /dns/txt?domain=<domain>")
-	log.Printf("  GET /dns/mx?domain=<domain>")
-	log.Printf("  GET /dns/srv?service=<service>&proto=<proto>&name=<name>")
+	log.Printf("  GET /dns/a?domain=<domain>&transport=<udp4|udp6>")
+	log.Printf("  GET /dns/aaaa?domain=<domain>&transport=<udp4|udp6>")
+	log.Printf("  GET /dns/cname?domain=<domain>&transport=<udp4|udp6>")
+	log.Printf("  GET /dns/txt?domain=<domain>&transport=<udp4|udp6>")
+	log.Printf("  GET /dns/mx?domain=<domain>&transport=<udp4|udp6>")
+	log.Printf("  GET /dns/srv?service=<service>&proto=<proto>&name=<name>&transport=<udp4|udp6>")
 	log.Printf("  GET /mongodb?uri=<mongodb-srv-uri>")
 	log.Printf("  GET /health")
 
