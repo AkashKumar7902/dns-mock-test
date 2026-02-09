@@ -16,39 +16,46 @@ A simple Go API server that provides DNS query endpoints for various record type
 go run main.go
 ```
 
-The server will start on port `8080`.
+The server will start on port `8086`.
 
 ## API Endpoints
 
-### A Record (IPv4)
+### A Record over UDP4 (IPv4 transport)
 ```bash
-curl "http://localhost:8080/dns/a?domain=google.com"
+curl "http://localhost:8086/dns/a?domain=google.com&transport=udp4"
 ```
 
-### AAAA Record (IPv6)
+### A Record over UDP6 (IPv6 transport)
 ```bash
-curl "http://localhost:8080/dns/aaaa?domain=google.com"
+curl "http://localhost:8086/dns/a?domain=google.com&transport=udp6"
+```
+
+### AAAA Record over UDP6 (IPv6 transport)
+```bash
+curl "http://localhost:8086/dns/aaaa?domain=google.com&transport=udp6"
 ```
 
 ### TXT Record
 ```bash
-curl "http://localhost:8080/dns/txt?domain=google.com"
+curl "http://localhost:8086/dns/txt?domain=google.com&transport=udp4"
 ```
 
 ### MX Record
 ```bash
-curl "http://localhost:8080/dns/mx?domain=google.com"
+curl "http://localhost:8086/dns/mx?domain=google.com&transport=udp4"
 ```
 
 ### SRV Record
 ```bash
-curl "http://localhost:8080/dns/srv?service=xmpp-server&proto=tcp&name=gmail.com"
+curl "http://localhost:8086/dns/srv?service=xmpp-server&proto=tcp&name=gmail.com&transport=udp4"
 ```
 
 ### Health Check
 ```bash
-curl "http://localhost:8080/health"
+curl "http://localhost:8086/health"
 ```
+
+`transport` can be `udp4` or `udp6`. If omitted, the API defaults to `udp4`.
 
 ## Example Responses
 

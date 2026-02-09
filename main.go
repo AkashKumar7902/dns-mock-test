@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strings"
 
 	"github.com/miekg/dns"
 )
@@ -46,6 +47,17 @@ type SRVRecord struct {
 	Weight   uint16 `json:"weight"`
 }
 
+func getTransport(r *http.Request) (string, error) {
+	transport := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("transport")))
+	if transport == "" {
+		return "udp4", nil
+	}
+	if transport != "udp4" && transport != "udp6" {
+		return "", fmt.Errorf("transport must be udp4 or udp6")
+	}
+	return transport, nil
+}
+
 // Handler for A records (IPv4) - Force TCP
 func handleARecord(w http.ResponseWriter, r *http.Request) {
 	domain := r.URL.Query().Get("domain")
@@ -54,7 +66,13 @@ func handleARecord(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	records, err := queryDNS(domain, dns.TypeA)
+	transport, err := getTransport(r)
+	if err != nil {
+		respondWithError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	records, err := queryDNS(domain, dns.TypeA, transport)
 	if err != nil {
 		respondWithJSON(w, DNSResponse{
 			Domain: domain,
@@ -86,7 +104,13 @@ func handleAAAARecord(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	records, err := queryDNS(domain, dns.TypeAAAA)
+	transport, err := getTransport(r)
+	if err != nil {
+		respondWithError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	records, err := queryDNS(domain, dns.TypeAAAA, transport)
 	if err != nil {
 		respondWithJSON(w, DNSResponse{
 			Domain: domain,
@@ -118,7 +142,13 @@ func handleTXTRecord(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	records, err := queryDNS(domain, dns.TypeTXT)
+	transport, err := getTransport(r)
+	if err != nil {
+		respondWithError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	records, err := queryDNS(domain, dns.TypeTXT, transport)
 	if err != nil {
 		respondWithJSON(w, DNSResponse{
 			Domain: domain,
@@ -152,7 +182,13 @@ func handleCNAMERecord(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	records, err := queryDNS(domain, dns.TypeCNAME)
+	transport, err := getTransport(r)
+	if err != nil {
+		respondWithError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	records, err := queryDNS(domain, dns.TypeCNAME, transport)
 	if err != nil {
 		respondWithJSON(w, DNSResponse{
 			Domain: domain,
@@ -184,7 +220,13 @@ func handleMXRecord(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rrs, err := queryDNS(domain, dns.TypeMX)
+	transport, err := getTransport(r)
+	if err != nil {
+		respondWithError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	rrs, err := queryDNS(domain, dns.TypeMX, transport)
 	if err != nil {
 		respondWithJSON(w, MXResponse{
 			Domain: domain,
@@ -222,8 +264,14 @@ func handleSRVRecord(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	transport, err := getTransport(r)
+	if err != nil {
+		respondWithError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	domain := fmt.Sprintf("_%s._%s.%s", service, proto, name)
-	rrs, err := queryDNS(domain, dns.TypeSRV)
+	rrs, err := queryDNS(domain, dns.TypeSRV, transport)
 	if err != nil {
 		respondWithJSON(w, SRVResponse{
 			Domain: domain,
@@ -252,22 +300,35 @@ func handleSRVRecord(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// queryDNS performs DNS query over TCP
-func queryDNS(domain string, qtype uint16) ([]dns.RR, error) {
+// queryDNS performs DNS query using udp4/udp6 over connected UDP sockets.
+func queryDNS(domain string, qtype uint16, transport string) ([]dns.RR, error) {
 	c := new(dns.Client)
-	// c.Net = "tcp" // Force TCP protocol
+
+	dnsServer := "8.8.8.8:53"
+	switch transport {
+	case "udp4":
+		c.Net = "udp4"
+	case "udp6":
+		c.Net = "udp6"
+		dnsServer = "[2001:4860:4860::8888]:53"
+	default:
+		return nil, fmt.Errorf("unsupported transport: %s", transport)
+	}
 
 	m := new(dns.Msg)
 	m.SetQuestion(dns.Fqdn(domain), qtype)
 	m.RecursionDesired = true
 
-	// Use Google's public DNS server
-	dnsServer := "8.8.8.8:53"
-
-	// You can also get system DNS servers
+	// Prefer a resolver from /etc/resolv.conf if it matches the requested family.
 	config, err := dns.ClientConfigFromFile("/etc/resolv.conf")
 	if err == nil && len(config.Servers) > 0 {
-		dnsServer = net.JoinHostPort(config.Servers[0], config.Port)
+		for _, server := range config.Servers {
+			candidate := net.JoinHostPort(server, config.Port)
+			if _, resolveErr := net.ResolveUDPAddr(c.Net, candidate); resolveErr == nil {
+				dnsServer = candidate
+				break
+			}
+		}
 	}
 
 	resp, _, err := c.Exchange(m, dnsServer)
@@ -372,12 +433,12 @@ func main() {
 	port := ":8086"
 	log.Printf("DNS API Server starting on port %s", port)
 	log.Printf("Endpoints:")
-	log.Printf("  GET /dns/a?domain=<domain>")
-	log.Printf("  GET /dns/aaaa?domain=<domain>")
-	log.Printf("  GET /dns/cname?domain=<domain>")
-	log.Printf("  GET /dns/txt?domain=<domain>")
-	log.Printf("  GET /dns/mx?domain=<domain>")
-	log.Printf("  GET /dns/srv?service=<service>&proto=<proto>&name=<name>")
+	log.Printf("  GET /dns/a?domain=<domain>&transport=<udp4|udp6>")
+	log.Printf("  GET /dns/aaaa?domain=<domain>&transport=<udp4|udp6>")
+	log.Printf("  GET /dns/cname?domain=<domain>&transport=<udp4|udp6>")
+	log.Printf("  GET /dns/txt?domain=<domain>&transport=<udp4|udp6>")
+	log.Printf("  GET /dns/mx?domain=<domain>&transport=<udp4|udp6>")
+	log.Printf("  GET /dns/srv?service=<service>&proto=<proto>&name=<name>&transport=<udp4|udp6>")
 	log.Printf("  GET /mongodb?uri=<mongodb-srv-uri>")
 	log.Printf("  GET /health")
 
