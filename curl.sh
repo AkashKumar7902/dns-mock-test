@@ -4,6 +4,7 @@
 # Make sure the server is running: go run main.go
 
 BASE_URL="http://localhost:8086"
+NEGATIVE_DNS_DOMAIN="keploy-negative.invalid"
 
 echo "===== Testing DNS API Server ====="
 echo ""
@@ -46,6 +47,17 @@ echo ""
 # SRV Record
 echo "8. SRV Record Query (_mongodb._tcp.cluster0.sjlpojg.mongodb.net):"
 curl -s "${BASE_URL}/dns/srv?service=mongodb&proto=tcp&name=cluster0.sjlpojg.mongodb.net&transport=udp4" | jq
+echo ""
+
+# Negative lookup
+echo "9. Negative A Record Query over UDP4 (${NEGATIVE_DNS_DOMAIN}):"
+negative_response=$(curl -s "${BASE_URL}/dns/a?domain=${NEGATIVE_DNS_DOMAIN}&transport=udp4")
+echo "$negative_response" | jq
+
+if ! echo "$negative_response" | jq -e '.error == "DNS query failed with code: 3"' >/dev/null; then
+  echo "Expected NXDOMAIN response for ${NEGATIVE_DNS_DOMAIN}"
+  exit 1
+fi
 echo ""
 
 # # Error handling test
